@@ -4,6 +4,8 @@
 
 [**Live Demo**](https://your-url.vercel.app) | [**View Results**](#key-findings)
 
+![Demo screenshot](images/demo.png)
+
 ---
 
 ## Why build this?
