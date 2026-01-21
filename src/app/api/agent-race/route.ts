@@ -123,7 +123,7 @@ export async function POST(request: NextRequest) {
             const step = STEPS[i];
 
             // Send "running" status
-            sendMessage(controller, encoder, {
+            sendSSEMessage(controller, encoder, {
               step: i + 1,
               name: step.name,
               status: "running",
