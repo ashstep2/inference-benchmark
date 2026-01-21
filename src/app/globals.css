@@ -1,26 +1,42 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0a;
+  --background-secondary: #111111;
+  --foreground: #fafafa;
+  --foreground-muted: #a1a1aa;
+  --accent: #f97316;
+  --accent-secondary: #fb923c;
+  --border: #27272a;
+  --card: #18181b;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-background-secondary: var(--background-secondary);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-foreground-muted: var(--foreground-muted);
+  --color-accent: var(--accent);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-border: var(--border);
+  --color-card: var(--card);
+  --font-sans: var(--font-manrope);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-manrope), system-ui, sans-serif;
+}
+
+.gradient-bg {
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(249, 115, 22, 0.15), transparent),
+    radial-gradient(ellipse 60% 40% at 100% 50%, rgba(251, 146, 60, 0.08), transparent),
+    radial-gradient(ellipse 60% 40% at 0% 50%, rgba(249, 115, 22, 0.08), transparent),
+    var(--background);
+}
+
+.tab-gradient {
+  background: linear-gradient(135deg, rgba(249, 115, 22, 0.1) 0%, rgba(251, 146, 60, 0.05) 100%);
 }
