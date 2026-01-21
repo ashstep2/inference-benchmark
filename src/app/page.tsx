@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   BarChart,
@@ -69,6 +69,16 @@ export default function Home() {
   const [isMockData, setIsMockData] = useState(false);
   const [activeTab, setActiveTab] = useState<"benchmark" | "agent-race" | "roi">("benchmark");
 
+  // Multi-run benchmark state
+  const [currentRun, setCurrentRun] = useState(0);
+  const [allRuns, setAllRuns] = useState<BenchmarkResult[][]>([]);
+  const [showIndividualRuns, setShowIndividualRuns] = useState(false);
+
+  // Live progress state
+  type ProviderStatus = "waiting" | "calling" | "streaming" | "complete" | "error";
+  const [providerStatus, setProviderStatus] = useState<Record<string, ProviderStatus>>({});
+  const [liveResults, setLiveResults] = useState<Record<string, BenchmarkResult>>({});
+
   // Agent Race state
   const [companyName, setCompanyName] = useState("Anthropic");
   const [selectedAgentProviders, setSelectedAgentProviders] = useState<AgentProvider[]>(["cerebras", "groq"]);
@@ -88,41 +98,166 @@ export default function Home() {
     );
   };
 
-  const runBenchmark = async () => {
-    if (selectedProviders.length === 0 || !prompt.trim()) return;
+  // Average results across multiple runs
+  const averageResults = (runs: BenchmarkResult[][]): BenchmarkResult[] => {
+    if (runs.length === 0) return [];
 
-    setIsLoading(true);
-    setResults([]);
-    setIsMockData(false);
-    setCurrentProvider(demoMode ? "simulating" : "all providers");
+    const providerResults: Record<string, BenchmarkResult[]> = {};
+
+    // Group results by provider
+    runs.forEach((run) => {
+      run.forEach((result) => {
+        if (!providerResults[result.provider]) {
+          providerResults[result.provider] = [];
+        }
+        providerResults[result.provider].push(result);
+      });
+    });
+
+    // Calculate averages for each provider
+    return Object.entries(providerResults).map(([provider, results]) => {
+      const validResults = results.filter((r) => !r.error);
+
+      if (validResults.length === 0) {
+        // All runs had errors, return the last error
+        return results[results.length - 1];
+      }
+
+      const avg = (arr: number[]) => arr.reduce((a, b) => a + b, 0) / arr.length;
+
+      return {
+        provider,
+        model: validResults[0].model,
+        ttft_ms: Math.round(avg(validResults.map((r) => r.ttft_ms))),
+        tokens_per_second: Math.round(avg(validResults.map((r) => r.tokens_per_second)) * 10) / 10,
+        total_latency_ms: Math.round(avg(validResults.map((r) => r.total_latency_ms))),
+        token_count: Math.round(avg(validResults.map((r) => r.token_count))),
+        time_to_100_tokens_ms: validResults[0].time_to_100_tokens_ms
+          ? Math.round(avg(validResults.filter((r) => r.time_to_100_tokens_ms).map((r) => r.time_to_100_tokens_ms!)))
+          : undefined,
+        throughput_first_100: validResults[0].throughput_first_100
+          ? Math.round(avg(validResults.filter((r) => r.throughput_first_100).map((r) => r.throughput_first_100!)) * 10) / 10
+          : undefined,
+      };
+    });
+  };
+
+  // Run benchmark for a single provider with status updates
+  const runSingleProvider = async (
+    provider: string,
+    updateStatus: (status: ProviderStatus) => void
+  ): Promise<BenchmarkResult> => {
+    updateStatus("calling");
 
     try {
-      const endpoint = demoMode ? "/api/benchmark/mock" : "/api/benchmark";
+      const endpoint = `/api/benchmark/${provider}`;
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           prompt: prompt.trim(),
           max_tokens: DEFAULTS.MAX_TOKENS,
-          providers: selectedProviders,
         }),
       });
 
-      const data = await response.json();
-      if (data.results) {
-        setResults(data.results);
-        setIsMockData(data.mock === true);
-        // Save to context for ROI Calculator (only save real results, not mock)
-        if (!data.mock) {
-          saveResults(data.results);
+      updateStatus("streaming");
+
+      const result: BenchmarkResult = await response.json();
+      updateStatus(result.error ? "error" : "complete");
+      return result;
+    } catch (error) {
+      updateStatus("error");
+      return {
+        provider,
+        model: providers[provider]?.model || "unknown",
+        ttft_ms: 0,
+        tokens_per_second: 0,
+        total_latency_ms: 0,
+        token_count: 0,
+        error: error instanceof Error ? error.message : "Request failed",
+      };
+    }
+  };
+
+  const runBenchmark = async () => {
+    if (selectedProviders.length === 0 || !prompt.trim()) return;
+
+    const totalRuns = demoMode ? 1 : DEFAULTS.BENCHMARK_RUNS;
+
+    setIsLoading(true);
+    setResults([]);
+    setAllRuns([]);
+    setCurrentRun(0);
+    setIsMockData(false);
+    setLiveResults({});
+    setProviderStatus({});
+
+    const collectedRuns: BenchmarkResult[][] = [];
+
+    try {
+      // Demo mode uses the mock endpoint (single call)
+      if (demoMode) {
+        setCurrentRun(1);
+        const response = await fetch("/api/benchmark/mock", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: prompt.trim(),
+            max_tokens: DEFAULTS.MAX_TOKENS,
+            providers: selectedProviders,
+          }),
+        });
+        const data = await response.json();
+        if (data.results) {
+          setResults(data.results);
+          setIsMockData(true);
+        }
+      } else {
+        // Real mode: call each provider individually with live updates
+        for (let run = 1; run <= totalRuns; run++) {
+          setCurrentRun(run);
+
+          // Reset status for this run
+          const initialStatus: Record<string, ProviderStatus> = {};
+          selectedProviders.forEach((p) => {
+            initialStatus[p] = "waiting";
+          });
+          setProviderStatus(initialStatus);
+          setLiveResults({});
+
+          // Run all providers in parallel with individual status updates
+          const runResults = await Promise.all(
+            selectedProviders.map((provider) =>
+              runSingleProvider(provider, (status) => {
+                setProviderStatus((prev) => ({ ...prev, [provider]: status }));
+              }).then((result) => {
+                // Update live results as each provider completes
+                setLiveResults((prev) => ({ ...prev, [provider]: result }));
+                return result;
+              })
+            )
+          );
+
+          collectedRuns.push(runResults);
+          setAllRuns([...collectedRuns]);
+
+          // Update averaged results after each run
+          const averaged = averageResults(collectedRuns);
+          setResults(averaged);
+        }
+
+        // Save final averaged results to context for ROI Calculator
+        if (collectedRuns.length > 0) {
+          const finalAverage = averageResults(collectedRuns);
+          saveResults(finalAverage);
         }
       }
     } catch {
       // Error is captured by the benchmark results with error field
-      // No need to log here as results will show the error state
     } finally {
       setIsLoading(false);
       setCurrentProvider(null);
+      setCurrentRun(0);
     }
   };
 
@@ -476,12 +611,12 @@ export default function Home() {
                     {isLoading ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        {demoMode ? "Simulating..." : "Testing..."}
+                        {demoMode ? "Simulating..." : `Running (${currentRun}/${DEFAULTS.BENCHMARK_RUNS})...`}
                       </>
                     ) : (
                       <>
                         <Play className="w-4 h-4" />
-                        {demoMode ? "Run Demo" : "Run Benchmark"}
+                        {demoMode ? "Run Demo" : `Run Benchmark (${DEFAULTS.BENCHMARK_RUNS}x)`}
                       </>
                     )}
                   </button>
@@ -489,6 +624,106 @@ export default function Home() {
               </div>
             </div>
           </motion.section>
+
+          {/* Live Progress Card */}
+          <AnimatePresence>
+            {isLoading && !demoMode && Object.keys(providerStatus).length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="bg-card border border-border rounded-xl p-4"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Run {currentRun} of {DEFAULTS.BENCHMARK_RUNS}
+                  </h3>
+                  <span className="text-xs text-foreground-muted">
+                    {Object.values(providerStatus).filter((s) => s === "complete").length} / {selectedProviders.length} complete
+                  </span>
+                </div>
+                <div className="space-y-2">
+                  {selectedProviders.map((providerId) => {
+                    const status = providerStatus[providerId] || "waiting";
+                    const result = liveResults[providerId];
+                    const providerName = providers[providerId]?.name || providerId;
+
+                    return (
+                      <motion.div
+                        key={providerId}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className={clsx(
+                          "flex items-center justify-between p-2.5 rounded-lg transition-colors",
+                          status === "complete" && !result?.error && "bg-emerald-500/10 border border-emerald-500/20",
+                          status === "error" || result?.error ? "bg-red-500/10 border border-red-500/20" : "",
+                          status === "calling" || status === "streaming" ? "bg-accent/10 border border-accent/20" : "",
+                          status === "waiting" && "bg-background/50 border border-border"
+                        )}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          {/* Status Icon */}
+                          {status === "waiting" && (
+                            <div className="w-4 h-4 rounded-full border-2 border-foreground-muted/30" />
+                          )}
+                          {(status === "calling" || status === "streaming") && (
+                            <Loader2 className="w-4 h-4 animate-spin text-accent" />
+                          )}
+                          {status === "complete" && !result?.error && (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                          )}
+                          {(status === "error" || result?.error) && (
+                            <XCircle className="w-4 h-4 text-red-500" />
+                          )}
+
+                          {/* Provider Name */}
+                          <span
+                            className="text-sm font-medium"
+                            style={{
+                              color: providerId === "cerebras" ? CEREBRAS_ORANGE : undefined,
+                            }}
+                          >
+                            {providerName}
+                          </span>
+
+                          {/* Status Text */}
+                          <span className="text-xs text-foreground-muted">
+                            {status === "waiting" && "Waiting..."}
+                            {status === "calling" && "Calling API..."}
+                            {status === "streaming" && "Streaming response..."}
+                            {status === "complete" && !result?.error && "Complete"}
+                            {(status === "error" || result?.error) && (result?.error || "Error")}
+                          </span>
+                        </div>
+
+                        {/* Live Results */}
+                        {result && !result.error && (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.9 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="flex items-center gap-3"
+                          >
+                            <div className="text-right">
+                              <div className="text-xs text-foreground-muted">TTFT</div>
+                              <div className="text-sm font-mono font-semibold text-foreground">
+                                {result.ttft_ms}ms
+                              </div>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-xs text-foreground-muted">Throughput</div>
+                              <div className="text-sm font-mono font-semibold text-foreground">
+                                {Math.round(result.tokens_per_second)} tok/s
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Results Section */}
           <AnimatePresence>
@@ -515,6 +750,102 @@ export default function Home() {
                     </span>
                   </motion.div>
                 )}
+
+                {/* Averaged Results Badge */}
+                {!isMockData && allRuns.length > 1 && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="flex items-center justify-center gap-2 py-1"
+                  >
+                    <span className="px-2 py-0.5 bg-emerald-500/20 border border-emerald-500/30 rounded text-[10px] font-medium text-emerald-400">
+                      AVERAGED OVER {allRuns.length} RUNS
+                    </span>
+                    <button
+                      onClick={() => setShowIndividualRuns(!showIndividualRuns)}
+                      className="text-[10px] text-foreground-muted hover:text-foreground flex items-center gap-1 transition-colors"
+                    >
+                      {showIndividualRuns ? "Hide" : "Show"} individual runs
+                      {showIndividualRuns ? (
+                        <ChevronUp className="w-3 h-3" />
+                      ) : (
+                        <ChevronDown className="w-3 h-3" />
+                      )}
+                    </button>
+                  </motion.div>
+                )}
+
+                {/* Individual Runs (Collapsible) */}
+                <AnimatePresence>
+                  {showIndividualRuns && allRuns.length > 1 && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="bg-card/50 border border-border rounded-lg p-3 mb-2">
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="border-b border-border">
+                              <th className="text-left py-1 text-foreground-muted font-medium">Run</th>
+                              {selectedProviders.map((p) => (
+                                <th key={p} className="text-right py-1 text-foreground-muted font-medium" colSpan={2}>
+                                  {providers[p]?.name}
+                                </th>
+                              ))}
+                            </tr>
+                            <tr className="border-b border-border">
+                              <th className="text-left py-1"></th>
+                              {selectedProviders.map((p) => (
+                                <React.Fragment key={p}>
+                                  <th className="text-right py-1 text-foreground-muted font-normal text-[10px]">TTFT</th>
+                                  <th className="text-right py-1 text-foreground-muted font-normal text-[10px]">tok/s</th>
+                                </React.Fragment>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {allRuns.map((run, i) => (
+                              <tr key={i} className="border-b border-border/50">
+                                <td className="py-1.5 text-foreground-muted">#{i + 1}</td>
+                                {selectedProviders.map((p) => {
+                                  const result = run.find((r) => r.provider === p);
+                                  return (
+                                    <React.Fragment key={p}>
+                                      <td className="text-right py-1.5 font-mono text-foreground">
+                                        {result?.error ? "err" : `${result?.ttft_ms}ms`}
+                                      </td>
+                                      <td className="text-right py-1.5 font-mono text-foreground">
+                                        {result?.error ? "-" : Math.round(result?.tokens_per_second || 0)}
+                                      </td>
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                            <tr className="bg-accent/5">
+                              <td className="py-1.5 font-semibold text-foreground">Avg</td>
+                              {selectedProviders.map((p) => {
+                                const result = results.find((r) => r.provider === p);
+                                return (
+                                  <React.Fragment key={p}>
+                                    <td className="text-right py-1.5 font-mono font-semibold text-foreground">
+                                      {result?.error ? "err" : `${result?.ttft_ms}ms`}
+                                    </td>
+                                    <td className="text-right py-1.5 font-mono font-semibold text-foreground">
+                                      {result?.error ? "-" : Math.round(result?.tokens_per_second || 0)}
+                                    </td>
+                                  </React.Fragment>
+                                );
+                              })}
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
                 {/* Stats Cards */}
                 <div className="grid grid-cols-3 gap-2">
@@ -1504,7 +1835,7 @@ export default function Home() {
             </span>
             <span>•</span>
             <a
-              href="https://github.com/ashkastephen/inference-benchmark"
+              href="https://github.com/ashstep2/inference-benchmark"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-foreground-muted hover:text-foreground transition-colors"

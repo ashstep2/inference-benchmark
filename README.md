@@ -2,7 +2,7 @@
 
 **Live inference benchmarks proving Cerebras is 4x faster than GPU providers.**
 
-[**Live Demo**](https://your-url.vercel.app) | [**View Results**](#key-findings)
+[**Live Demo**](https://inference-benchmark.vercel.app/) | [**View Results**](#key-findings)
 
 ![Demo screenshot](images/demo.png)
 
@@ -105,7 +105,7 @@ For AI agents, voice apps, and real-time UX, the difference between 100ms and 40
 
 ```bash
 # Clone the repository
-git clone https://github.com/ashkastephen/inference-benchmark.git
+git clone https://github.com/ashstep2/inference-benchmark.git
 cd inference-benchmark
 
 # Install dependencies

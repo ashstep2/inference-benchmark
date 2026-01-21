@@ -5,9 +5,10 @@
 
 // Default request parameters
 export const DEFAULTS = {
-  MAX_TOKENS: 256,
+  MAX_TOKENS: 400,
   CHARS_PER_TOKEN: 4, // Approximation for token counting
   TOKEN_THRESHOLD_FOR_METRICS: 100, // Track time to reach this many tokens
+  BENCHMARK_RUNS: 3, // Number of runs to average for more reliable results
 } as const;
 
 // Mock/simulation data for demo mode
