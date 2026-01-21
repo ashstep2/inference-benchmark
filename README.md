@@ -2,7 +2,7 @@
 
 **Live inference benchmarks showing where Cerebras wins—and by how much.**
 
-[**Live Demo**](https://inference-benchmark.vercel.app/) | [**View Results**](#key-findings)
+[**Live Demo**](https://inference-benchmark-ten.vercel.app/) | [**View Results**](#key-findings)
 
 ![Demo screenshot](images/demo.png)
 
